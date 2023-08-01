@@ -1,6 +1,4 @@
-import datetime
 import io
-import os
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -8,16 +6,19 @@ from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 import pandas as pd
 
-from simpleloader.config import GDRIVE_ROOT_FOLDER_ID, GDRIVE_SA_TOKEN, RUN_ID
-from simpleloader.datafile import DataFile
-from simpleloader.utils import authenticated
+from .datafile import DataFile
+from .utils import authenticated
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 
 class Drive:
-    def __init__(self):
-        self.root_id = GDRIVE_ROOT_FOLDER_ID
+    credentials: Credentials
+    root_id: str
+
+    def __init__(self, root_folder_id: str, credentials: Credentials):
+        self.credentials = credentials.with_scopes(SCOPES)
+        self.root_id = root_folder_id
         self.root = DataFile(
             name="Root",
             identifier=self.root_id,
@@ -28,17 +29,19 @@ class Drive:
         self.successful = None
         self.fail = None
 
+
     def authenticate(self):
         """Authenticate to Google Drive using a service account."""
-        creds = Credentials.from_service_account_info(GDRIVE_SA_TOKEN, scopes=SCOPES)
-        service = build("drive", "v3", credentials=creds)
+        service = build("drive", "v3", credentials=self.credentials)
         self.service = service
         self.authenticated = True
 
 
     @authenticated
-    def _ls(self, folder_id=GDRIVE_ROOT_FOLDER_ID):
+    def _ls(self, folder_id=None):
         """List all files in a Google Drive folder."""
+        folder_id = folder_id or self.root_id
+
         fields = "files(id, name, createdTime, kind, mimeType, modifiedTime, properties, parents)"
         results = (
             self.service.files()
@@ -54,8 +57,9 @@ class Drive:
         return results.get("files", [])
 
     def ls(
-        self, folder_id=GDRIVE_ROOT_FOLDER_ID, download=False, most_recent_only=False
+        self, folder_id=None, download=False, most_recent_only=False
     ):
+        folder_id = folder_id or self.root_id
         datafiles = [
             DataFile.from_gdrive(item) for item in self._ls(folder_id=folder_id)
         ]
