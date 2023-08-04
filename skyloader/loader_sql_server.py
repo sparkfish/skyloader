@@ -1,8 +1,7 @@
 from itertools import repeat
 
-from simpleloader.config import SQL_SERVER_CONNECTION_STRING, SQL_SERVER_SCHEMA
-from simpleloader.config import logger
-from simpleloader.utils import connected
+from skyloader.utils import connected
+from skyloader.loader_base import LoaderBase
 
 import pandas as pd
 import pyodbc
@@ -19,12 +18,14 @@ def schema_information(df):
 
 class SqlLoader(LoaderBase):
     def __init__(
-        self, connection_string=SQL_SERVER_CONNECTION_STRING, schemaname=SQL_SERVER_SCHEMA
+        self,
+        # connection_string=SQL_SERVER_CONNECTION_STRING,
+        # schemaname=SQL_SERVER_SCHEMA,
     ):
-        self.connection_string = connection_string
+        # self.connection_string = connection_string
         self.connection = None
         self.connected = False
-        self.schema = schemaname
+        # self.schema = schemaname
 
     @property
     def schemaname(self):
@@ -49,7 +50,9 @@ class SqlLoader(LoaderBase):
             EXEC('CREATE SCHEMA [{self.schemaname}]')
         END
         """
-        logger.info(f"Creating schema {self.schemaname} if it does not already exist:\n\n{ddl}")
+        logger.info(
+            f"Creating schema {self.schemaname} if it does not already exist:\n\n{ddl}"
+        )
         self.connection.execute(ddl)
         logger.info(f"DDL SQL for schema {self.schemaname} finished successfully")
 
@@ -63,7 +66,7 @@ class SqlLoader(LoaderBase):
             "datetime64[ns]": "datetime",
             "bool": "bit",
             "timedelta[ns]": "time",
-            "category": "nvarchar(max)"
+            "category": "nvarchar(max)",
         }
         columns_spec = ", ".join(
             f"[{column}] {dtypes_mapping[dtype]}"
@@ -79,10 +82,11 @@ class SqlLoader(LoaderBase):
 
     def create_table_if_not_exists(self, datafile):
         ddl = self.create_table_statement(datafile)
-        logger.info(f"Table {self.schema}.{datafile.tablename} does not exist, executing SQL:\n\n{ddl}")
+        logger.info(
+            f"Table {self.schema}.{datafile.tablename} does not exist, executing SQL:\n\n{ddl}"
+        )
         self.connection.execute(ddl)
         logger.info(f"DDL SQL executed successfully")
-
 
     def perform_load(self, datafile):
         insert = self.insert_statement(datafile.data.columns, datafile.tablename)
@@ -94,12 +98,10 @@ class SqlLoader(LoaderBase):
         cursor.commit()
         cursor.close()
 
-
     def insert_statement(self, column_names, tablename):
         columns = ", ".join(column_names)
         q = ",".join(repeat("?", len(column_names)))
         return f"INSERT INTO {self.schemaname}.{tablename} ({columns}) VALUES ({q})"
-
 
     def load_data(self, datafile):
         # We don't want to autocommit here, since the driver will issue a commit for each record in the load
@@ -113,6 +115,7 @@ class SqlLoader(LoaderBase):
             logger.error(f"Loading of data into SQL Server of {datafile} failed")
             raise err
         else:
-            logger.info(f"Load successful. Loaded {datafile.processed} records from {datafile} into SQL Server")
+            logger.info(
+                f"Load successful. Loaded {datafile.processed} records from {datafile} into SQL Server"
+            )
             self.autocommit = True
-
