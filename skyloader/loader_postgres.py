@@ -22,14 +22,44 @@ def schema_information(df):
 
 class PostgresLoader(LoaderBase):
     def __init__(self, server, database, port=5432, schemaname=None, user=None, password=None):
-        self.server = server
+        # Validate required parameters
+        if not server or not isinstance(server, str):
+            raise ValueError("Server must be a non-empty string")
+        if not database or not isinstance(database, str):
+            raise ValueError("Database must be a non-empty string")
+        if not user or not isinstance(user, str):
+            raise ValueError("User must be a non-empty string")
+        if not password or not isinstance(password, str):
+            raise ValueError("Password must be a non-empty string")
+        
+        # Validate port
+        if not isinstance(port, int) or port <= 0 or port > 65535:
+            raise ValueError("Port must be an integer between 1 and 65535")
+        
+        # Validate schema name if provided
+        if schemaname is not None:
+            if not isinstance(schemaname, str) or not schemaname.strip():
+                raise ValueError("Schema name must be a non-empty string if provided")
+            # Basic validation for schema name - alphanumeric, underscore, no spaces at start/end
+            if not schemaname.replace('_', '').isalnum():
+                raise ValueError("Schema name can only contain alphanumeric characters and underscores")
+        
+        # Validate server name format (basic check for suspicious characters)
+        if any(char in server for char in [';', '--', '/*', '*/', 'xp_', 'sp_']):
+            raise ValueError("Server name contains suspicious characters")
+        
+        # Validate database name format
+        if any(char in database for char in [';', '--', '/*', '*/', 'DROP', 'DELETE', 'INSERT', 'UPDATE']):
+            raise ValueError("Database name contains suspicious characters or SQL keywords")
+        
+        self.server = server.strip()
         self.port = port
-        self.database = database
-        self.user = user
-        self.password = password
+        self.database = database.strip()
+        self.user = user.strip()
+        self.password = password  # Don't strip password as it might have intentional spaces
         self.connection = None
         self.connected = False
-        self.schema = schemaname
+        self.schema = schemaname.strip() if schemaname else None
 
     @property
     def schemaname(self):

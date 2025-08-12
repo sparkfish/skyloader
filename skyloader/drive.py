@@ -1,4 +1,5 @@
 import io
+import re
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -17,7 +18,25 @@ class Drive:
     root_id: str
 
     def __init__(self, root_folder_id: str, credentials: Credentials):
-        self.credentials = credentials.with_scopes(SCOPES)
+        # Validate root_folder_id
+        if not root_folder_id or not isinstance(root_folder_id, str):
+            raise ValueError("Root folder ID must be a non-empty string")
+        
+        root_folder_id = root_folder_id.strip()
+        
+        # Google Drive folder IDs are typically 33 characters long and contain alphanumeric characters, hyphens, and underscores
+        if not re.match(r'^[a-zA-Z0-9_-]{10,50}$', root_folder_id):
+            raise ValueError("Invalid Google Drive folder ID format")
+        
+        # Validate credentials
+        if not credentials or not isinstance(credentials, Credentials):
+            raise ValueError("Credentials must be a valid Google OAuth2 Credentials object")
+        
+        try:
+            self.credentials = credentials.with_scopes(SCOPES)
+        except Exception as e:
+            raise ValueError(f"Failed to apply scopes to credentials: {e}")
+        
         self.root_id = root_folder_id
         self.root = DataFile(
             name="Root",

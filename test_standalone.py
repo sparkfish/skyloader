@@ -8,6 +8,7 @@ import logging
 import pandas as pd
 import sys
 import os
+import re
 from unittest.mock import Mock
 from datetime import datetime
 from pathlib import Path
@@ -227,6 +228,37 @@ def test_input_validation():
         """Basic validation - only allow alphanumeric and underscore"""
         return column.replace('_', '').replace(' ', '').isalnum()
     
+    def validate_folder_id(folder_id):
+        """Validate Google Drive folder ID format"""
+        if not folder_id or not isinstance(folder_id, str):
+            return False
+        folder_id = folder_id.strip()
+        return re.match(r'^[a-zA-Z0-9_-]{10,50}$', folder_id) is not None
+    
+    def validate_connection_params(server, database, user, password, port):
+        """Validate database connection parameters"""
+        try:
+            if not server or not isinstance(server, str):
+                return False, "Server must be a non-empty string"
+            if not database or not isinstance(database, str):
+                return False, "Database must be a non-empty string"
+            if not user or not isinstance(user, str):
+                return False, "User must be a non-empty string"
+            if not password or not isinstance(password, str):
+                return False, "Password must be a non-empty string"
+            if not isinstance(port, int) or port <= 0 or port > 65535:
+                return False, "Port must be an integer between 1 and 65535"
+            
+            # Check for suspicious characters
+            if any(char in server for char in [';', '--', '/*', '*/', 'xp_', 'sp_']):
+                return False, "Server name contains suspicious characters"
+            if any(char in database for char in [';', '--', '/*', '*/', 'DROP', 'DELETE', 'INSERT', 'UPDATE']):
+                return False, "Database name contains suspicious characters"
+            
+            return True, "Valid"
+        except Exception as e:
+            return False, str(e)
+    
     # Test valid column names
     valid_columns = ['name', 'age', 'user_id', 'first_name', 'data_2023']
     for col in valid_columns:
@@ -239,6 +271,49 @@ def test_input_validation():
     for col in invalid_columns:
         if validate_column_name(col):
             print(f"✗ Invalid column '{col}' was accepted")
+            return
+    
+    # Test valid folder IDs
+    valid_folder_ids = ['1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms', 'abc123_-def456', '1234567890abcdef']
+    for folder_id in valid_folder_ids:
+        if not validate_folder_id(folder_id):
+            print(f"✗ Valid folder ID '{folder_id}' was rejected")
+            return
+    
+    # Test invalid folder IDs
+    invalid_folder_ids = ['', 'short', 'has spaces', 'has/slash', 'DROP TABLE', None]
+    for folder_id in invalid_folder_ids:
+        if validate_folder_id(folder_id):
+            print(f"✗ Invalid folder ID '{folder_id}' was accepted")
+            return
+    
+    # Test valid connection parameters
+    valid_params = [
+        ('localhost', 'testdb', 'user', 'pass', 5432),
+        ('192.168.1.100', 'mydb', 'admin', 'secret123', 1433),
+        ('db.example.com', 'production', 'dbuser', 'complex_pass!', 3306)
+    ]
+    for params in valid_params:
+        is_valid, msg = validate_connection_params(*params)
+        if not is_valid:
+            print(f"✗ Valid connection params {params} were rejected: {msg}")
+            return
+    
+    # Test invalid connection parameters
+    invalid_params = [
+        ('', 'testdb', 'user', 'pass', 5432),  # Empty server
+        ('localhost', '', 'user', 'pass', 5432),  # Empty database
+        ('localhost', 'testdb', '', 'pass', 5432),  # Empty user
+        ('localhost', 'testdb', 'user', '', 5432),  # Empty password
+        ('localhost', 'testdb', 'user', 'pass', 0),  # Invalid port
+        ('localhost', 'testdb', 'user', 'pass', 70000),  # Invalid port
+        ('server;DROP TABLE', 'testdb', 'user', 'pass', 5432),  # Malicious server
+        ('localhost', 'db;DELETE FROM users', 'user', 'pass', 5432),  # Malicious database
+    ]
+    for params in invalid_params:
+        is_valid, msg = validate_connection_params(*params)
+        if is_valid:
+            print(f"✗ Invalid connection params {params} were accepted")
             return
     
     print("✓ Input validation test passed\n")

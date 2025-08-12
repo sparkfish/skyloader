@@ -20,15 +20,59 @@ def schema_information(df):
 
 
 class SqlLoader(LoaderBase):
-    def __init__(
-        self,
-        # connection_string=SQL_SERVER_CONNECTION_STRING,
-        # schemaname=SQL_SERVER_SCHEMA,
-    ):
-        # self.connection_string = connection_string
+    def __init__(self, server=None, database=None, user=None, password=None, port=1433, schemaname=None, connection_string=None):
+        # Allow either connection_string OR individual parameters
+        if connection_string:
+            if not isinstance(connection_string, str) or not connection_string.strip():
+                raise ValueError("Connection string must be a non-empty string")
+            self.connection_string = connection_string.strip()
+        else:
+            # Validate required parameters when not using connection string
+            if not server or not isinstance(server, str):
+                raise ValueError("Server must be a non-empty string")
+            if not database or not isinstance(database, str):
+                raise ValueError("Database must be a non-empty string")
+            if not user or not isinstance(user, str):
+                raise ValueError("User must be a non-empty string")
+            if not password or not isinstance(password, str):
+                raise ValueError("Password must be a non-empty string")
+            
+            # Validate port
+            if not isinstance(port, int) or port <= 0 or port > 65535:
+                raise ValueError("Port must be an integer between 1 and 65535")
+            
+            # Validate server name format (basic check for suspicious characters)
+            if any(char in server for char in [';', '--', '/*', '*/', 'xp_', 'sp_']):
+                raise ValueError("Server name contains suspicious characters")
+            
+            # Validate database name format
+            if any(char in database for char in [';', '--', '/*', '*/', 'DROP', 'DELETE', 'INSERT', 'UPDATE']):
+                raise ValueError("Database name contains suspicious characters or SQL keywords")
+            
+            # Build connection string from parameters
+            from skyloader.utils import build_connection_string
+            self.connection_string = build_connection_string(
+                driver="{ODBC Driver 17 for SQL Server}",
+                server=server.strip(),
+                database=database.strip(),
+                uid=user.strip(),
+                pwd=password,  # Don't strip password
+                port=str(port)
+            )
+        
+        # Validate schema name if provided
+        if schemaname is not None:
+            if not isinstance(schemaname, str) or not schemaname.strip():
+                raise ValueError("Schema name must be a non-empty string if provided")
+            # Basic validation for schema name - alphanumeric, underscore, no spaces at start/end
+            if not schemaname.replace('_', '').isalnum():
+                raise ValueError("Schema name can only contain alphanumeric characters and underscores")
+            self.schema = schemaname.strip()
+        else:
+            self.schema = None
+        
         self.connection = None
         self.connected = False
-        # self.schema = schemaname
 
     @property
     def schemaname(self):
