@@ -1,10 +1,14 @@
+import logging
 from itertools import repeat
 
 from skyloader.loader_base import LoaderBase
 from skyloader.utils import connected
 
 import pandas as pd
-import pyodbc
+import psycopg2
+from psycopg2 import sql
+
+logger = logging.getLogger(__name__)
 
 
 def schema_information(df):
@@ -17,10 +21,12 @@ def schema_information(df):
 
 
 class PostgresLoader(LoaderBase):
-    def __init__(self, server, database, port=5432, schemaname=None):
+    def __init__(self, server, database, port=5432, schemaname=None, user=None, password=None):
         self.server = server
         self.port = port
         self.database = database
+        self.user = user
+        self.password = password
         self.connection = None
         self.connected = False
         self.schema = schemaname
@@ -30,13 +36,20 @@ class PostgresLoader(LoaderBase):
         return self.schema
 
     def connect(self):
-        self.connection = pyodbc.connect(self.connection_string)
+        self.connection = psycopg2.connect(
+            host=self.server,
+            port=self.port,
+            database=self.database,
+            user=self.user,
+            password=self.password
+        )
         self.connection.autocommit = True
         self.connected = True
 
-    def create_jdbc_url(self):
-        pg_jdbc_url = f"jdbc:postgresql://{server}:{port}/{database}"
-        return pg_jdbc_url
+    def close_connection(self):
+        if self.connection:
+            self.connection.close()
+            self.connected = False
 
     @connected
     def load_datafile(self, datafile):
@@ -44,91 +57,84 @@ class PostgresLoader(LoaderBase):
         self.create_table_if_not_exists(datafile)
         self.load_data(datafile)
 
-    def write_sql(self):
-        (
-            df.write.format("jdbc")
-            .option("user", pg_user)
-            .option("password", pg_pass)
-            .option("url", pg_jdbc_url)
-            .option("dbtable", target_table)
-            .mode(write_mode)
-            .save()
-        )
-
     def create_schema_if_not_exists(self):
-        ddl = f"""IF NOT EXISTS (SELECT schema_name 
-        FROM information_schema.schemata 
-        WHERE schema_name = '{self.schemaname}')
-        BEGIN
-            EXEC('CREATE SCHEMA [{self.schemaname}]')
-        END
-        """
+        # Use parameterized query to prevent SQL injection
+        ddl = "CREATE SCHEMA IF NOT EXISTS %s"
         logger.info(
-            f"Creating schema {self.schemaname} if it does not already exist:\n\n{ddl}"
+            f"Creating schema {self.schemaname} if it does not already exist"
         )
-        self.connection.execute(ddl)
+        cursor = self.connection.cursor()
+        cursor.execute(sql.SQL(ddl).format(sql.Identifier(self.schemaname)))
+        cursor.close()
         logger.info(f"DDL SQL for schema {self.schemaname} finished successfully")
 
     def create_table_statement(self, datafile):
         tablename = datafile.tablename
         schema_info = schema_information(datafile.data)
         dtypes_mapping = {
-            "object": "nvarchar(max)",
-            "float64": "float",
-            "int64": "bigint",
-            "datetime64[ns]": "datetime",
-            "bool": "bit",
-            "timedelta[ns]": "time",
-            "category": "nvarchar(max)",
+            "object": "TEXT",
+            "float64": "DOUBLE PRECISION",
+            "int64": "BIGINT",
+            "datetime64[ns]": "TIMESTAMP",
+            "bool": "BOOLEAN",
+            "timedelta[ns]": "INTERVAL",
+            "category": "TEXT",
         }
-        columns_spec = ", ".join(
-            f"[{column}] {dtypes_mapping[dtype]}"
-            for column, dtype in zip(schema_info["column"], schema_info["dtype"])
-        )
+        
+        # Validate column names to prevent injection
+        safe_columns = []
+        for column, dtype in zip(schema_info["column"], schema_info["dtype"]):
+            # Basic validation - only allow alphanumeric and underscore
+            if not column.replace('_', '').replace(' ', '').isalnum():
+                raise ValueError(f"Invalid column name: {column}")
+            if dtype not in dtypes_mapping:
+                raise ValueError(f"Unsupported data type: {dtype}")
+            safe_columns.append(f'"{column}" {dtypes_mapping[dtype]}')
+        
+        columns_spec = ", ".join(safe_columns)
 
         return f"""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = N'{datafile.tablename}' AND TABLE_SCHEMA = N'{self.schemaname}')
-        BEGIN
-            CREATE TABLE {self.schema}.{datafile.tablename} ({columns_spec})
-        END
+        CREATE TABLE IF NOT EXISTS "{self.schema}"."{datafile.tablename}" ({columns_spec})
         """
 
     def create_table_if_not_exists(self, datafile):
         ddl = self.create_table_statement(datafile)
         logger.info(
-            f"Table {self.schema}.{datafile.tablename} does not exist, executing SQL:\n\n{ddl}"
+            f"Creating table {self.schema}.{datafile.tablename} if it does not exist"
         )
-        self.connection.execute(ddl)
+        cursor = self.connection.cursor()
+        cursor.execute(ddl)
+        cursor.close()
         logger.info(f"DDL SQL executed successfully")
 
     def perform_load(self, datafile):
         insert = self.insert_statement(datafile.data.columns, datafile.tablename)
         logger.debug(f"Executing SQL: \n{insert}")
         cursor = self.connection.cursor()
-        cursor.fast_executemany = True
         logger.info(f"{datafile.records}")
-        cursor.executemany(insert, datafile.records)
-        cursor.commit()
+        cursor.executemany(insert, list(datafile.records))
         cursor.close()
 
     def insert_statement(self, column_names, tablename):
-        columns = ", ".join(column_names)
-        q = ",".join(repeat("?", len(column_names)))
-        return f"INSERT INTO {self.schemaname}.{tablename} ({columns}) VALUES ({q})"
+        columns = ", ".join(f'"{col}"' for col in column_names)
+        placeholders = ",".join(repeat("%s", len(column_names)))
+        return f'INSERT INTO "{self.schemaname}"."{tablename}" ({columns}) VALUES ({placeholders})'
 
     def load_data(self, datafile):
         # We don't want to autocommit here, since the driver will issue a commit for each record in the load
         # Rather we'll commit explicitly at the end so that either all the records are committed, or none are
-        self.autocommit = False
+        self.connection.autocommit = False
         try:
-            logger.info(f"Loading records from {datafile} into SQL Server")
+            logger.info(f"Loading records from {datafile} into PostgreSQL")
             self.perform_load(datafile)
-        except pyodbc.DatabaseError as err:
+            self.connection.commit()
+        except psycopg2.DatabaseError as err:
             self.connection.rollback()
-            logger.error(f"Loading of data into SQL Server of {datafile} failed")
+            logger.error(f"Loading of data into PostgreSQL of {datafile} failed")
             raise err
         else:
             logger.info(
-                f"Load successful. Loaded {datafile.processed} records from {datafile} into SQL Server"
+                f"Load successful. Loaded {datafile.processed} records from {datafile} into PostgreSQL"
             )
-            self.autocommit = True
+        finally:
+            self.connection.autocommit = True

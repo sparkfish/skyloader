@@ -1,3 +1,4 @@
+import logging
 from itertools import repeat
 
 from skyloader.utils import connected
@@ -5,6 +6,8 @@ from skyloader.loader_base import LoaderBase
 
 import pandas as pd
 import pyodbc
+
+logger = logging.getLogger(__name__)
 
 
 def schema_information(df):
@@ -36,6 +39,11 @@ class SqlLoader(LoaderBase):
         self.connection.autocommit = True
         self.connected = True
 
+    def close_connection(self):
+        if self.connection:
+            self.connection.close()
+            self.connected = False
+
     @connected
     def load_datafile(self, datafile):
         self.create_schema_if_not_exists()
@@ -43,17 +51,17 @@ class SqlLoader(LoaderBase):
         self.load_data(datafile)
 
     def create_schema_if_not_exists(self):
-        ddl = f"""IF NOT EXISTS (SELECT schema_name 
+        ddl = """IF NOT EXISTS (SELECT schema_name 
         FROM information_schema.schemata 
-        WHERE schema_name = '{self.schemaname}')
+        WHERE schema_name = ?)
         BEGIN
-            EXEC('CREATE SCHEMA [{self.schemaname}]')
+            EXEC('CREATE SCHEMA [' + ? + ']')
         END
         """
         logger.info(
-            f"Creating schema {self.schemaname} if it does not already exist:\n\n{ddl}"
+            f"Creating schema {self.schemaname} if it does not already exist"
         )
-        self.connection.execute(ddl)
+        self.connection.execute(ddl, self.schemaname, self.schemaname)
         logger.info(f"DDL SQL for schema {self.schemaname} finished successfully")
 
     def create_table_statement(self, datafile):
@@ -68,24 +76,31 @@ class SqlLoader(LoaderBase):
             "timedelta[ns]": "time",
             "category": "nvarchar(max)",
         }
-        columns_spec = ", ".join(
-            f"[{column}] {dtypes_mapping[dtype]}"
-            for column, dtype in zip(schema_info["column"], schema_info["dtype"])
-        )
+        
+        safe_columns = []
+        for column, dtype in zip(schema_info["column"], schema_info["dtype"]):
+            # Basic validation - only allow alphanumeric and underscore
+            if not column.replace('_', '').replace(' ', '').isalnum():
+                raise ValueError(f"Invalid column name: {column}")
+            if dtype not in dtypes_mapping:
+                raise ValueError(f"Unsupported data type: {dtype}")
+            safe_columns.append(f"[{column}] {dtypes_mapping[dtype]}")
+        
+        columns_spec = ", ".join(safe_columns)
 
         return f"""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = N'{datafile.tablename}' AND TABLE_SCHEMA = N'{self.schemaname}')
+        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = ? AND TABLE_SCHEMA = ?)
         BEGIN
-            CREATE TABLE {self.schema}.{datafile.tablename} ({columns_spec})
+            CREATE TABLE [{self.schema}].[{datafile.tablename}] ({columns_spec})
         END
-        """
+        """, [datafile.tablename, self.schemaname]
 
     def create_table_if_not_exists(self, datafile):
-        ddl = self.create_table_statement(datafile)
+        ddl, params = self.create_table_statement(datafile)
         logger.info(
-            f"Table {self.schema}.{datafile.tablename} does not exist, executing SQL:\n\n{ddl}"
+            f"Table {self.schema}.{datafile.tablename} does not exist, executing SQL"
         )
-        self.connection.execute(ddl)
+        self.connection.execute(ddl, params)
         logger.info(f"DDL SQL executed successfully")
 
     def perform_load(self, datafile):

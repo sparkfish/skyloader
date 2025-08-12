@@ -1,19 +1,35 @@
 import datetime
+import logging
 import traceback
+import uuid
+from io import StringIO
 
 from skyloader.datafile import DataFile
-from skyloader.drive import Drive
+
+# Make Drive import optional to avoid Google dependencies during testing
+try:
+    from skyloader.drive import Drive
+    DRIVE_AVAILABLE = True
+except ImportError:
+    Drive = None
+    DRIVE_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 
 class LoaderManager:
-    def __init__(self):
-        self.drive = Drive()
-        # self.loader = Loader()
-        self.root = self.drive.root
+    def __init__(self, drive=None, loader=None):
+        self.drive = drive
+        self.loader = loader
+        self.root = self.drive.root if self.drive else None
         self.inbox = None
         self.archive = None
         self.logs = None
         self.error = None
+        # Generate a unique run ID for this session
+        self.run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + str(uuid.uuid4())[:8]
+        # Create a log stream for capturing logs
+        self.log_stream = StringIO()
 
     def __enter__(self):
         self.configure_folders()
@@ -74,7 +90,7 @@ class LoaderManager:
     def insert_metadata_fields(self, datafile):
         logger.debug(f"Adding metadata fields to {datafile}")
         if datafile.data is not None:
-            datafile.data["run_id"] = RUN_ID
+            datafile.data["run_id"] = self.run_id
             datafile.data["loaded_at"] = datetime.datetime.now()
         else:
             logger.warning(f"No data present in datafile {datafile}")
@@ -107,7 +123,9 @@ class LoaderManager:
         self.move_file_to_destination(datafile, "archive")
 
     def upload_run_logs_to_drive(self):
-        self.drive.upload_log_to_drive(
-            log_stream, f"{RUN_ID}.logs", self.logs.identifier
-        )
-        log_stream.truncate()
+        if self.drive and self.logs:
+            self.drive.upload_log_to_drive(
+                self.log_stream, f"{self.run_id}.logs", self.logs.identifier
+            )
+            self.log_stream.truncate(0)
+            self.log_stream.seek(0)
